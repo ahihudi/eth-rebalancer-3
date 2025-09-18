@@ -172,28 +172,19 @@ if 'start_date' not in st.session_state:
 if 'end_date' not in st.session_state:
     st.session_state['end_date'] = max_date
 
-initial = st.number_input("Initial Capital", 1000, 1000000, 100000)
-eth_weight = st.slider("Initial ETH Weight", 0.0, 1.0, 0.5)
-sma = st.slider("SMA Window", 50, 400, 200)
-alpha = st.slider("Alpha", 0.1, 1.0, 0.5)
-threshold = st.slider("Rebalance Threshold", 0.01, 0.1, 0.05)
-stable_apy = st.slider("Stablecoin APY", 0.0, 0.2, 0.06)
-eth_apy = st.slider("ETH APY", 0.0, 0.2, 0.025)
-fee_bps = st.slider("Fee (bps)", 0, 100, 5)
-slip_bps = st.slider("Slippage (bps)", 0, 100, 10)
-use_bands = st.checkbox("Use ATR Bands")
-atr = st.number_input("ATR Window", 5, 50, 14)
-atr_k = st.number_input("ATR Multiplier", 0.5, 5.0, 2.0)
 
 
-# Individual date inputs
-col1, col2 = st.columns(2)
-with col1:
+# Initial Capital, Start Date, End Date in one row
+col_init, col_start, col_end = st.columns(3)
+with col_init:
+    initial = st.number_input("Initial Capital", 1000, 1000000, 100000)
+with col_start:
     start_date = st.date_input("Start Date", st.session_state['start_date'], min_value=min_date, max_value=max_date)
-with col2:
+with col_end:
     end_date = st.date_input("End Date", st.session_state['end_date'], min_value=min_date, max_value=max_date)
 
 # Two-way sync logic
+
 date_range = (st.session_state['start_date'], st.session_state['end_date'])
 if (start_date != st.session_state['start_date']) or (end_date != st.session_state['end_date']):
     st.session_state['start_date'] = start_date
@@ -201,11 +192,8 @@ if (start_date != st.session_state['start_date']) or (end_date != st.session_sta
     st.session_state['date_range'] = (start_date, end_date)
     st.rerun()
 
+
 start_date, end_date = st.session_state['start_date'], st.session_state['end_date']
-
-
-# Action
-
 df_prices = full_df_prices[(full_df_prices['Date'] >= pd.to_datetime(start_date)) & (full_df_prices['Date'] <= pd.to_datetime(end_date))]
 st.subheader(f"Loaded ETH Prices ({start_date} to {end_date})")
 st.line_chart(df_prices.set_index('Date')['Close'])
@@ -218,6 +206,22 @@ date_range_slider = st.slider(
     value=(start_date, end_date),
     format="YYYY-MM-DD"
 )
+
+
+threshold = st.slider("Rebalance Threshold", 0.01, 0.1, 0.05)
+
+# Advanced options expander
+with st.expander("Advanced Options"):
+    eth_weight = st.slider("Initial ETH Weight", 0.0, 1.0, 0.5)
+    sma = st.slider("SMA Window", 50, 400, 200)
+    alpha = st.slider("Alpha", 0.1, 1.0, 0.5)
+    stable_apy = st.slider("Stablecoin APY", 0.0, 0.2, 0.06)
+    eth_apy = st.slider("ETH APY", 0.0, 0.2, 0.025)
+    fee_bps = st.slider("Fee (bps)", 0, 100, 5)
+    slip_bps = st.slider("Slippage (bps)", 0, 100, 10)
+    use_bands = st.checkbox("Use ATR Bands")
+    atr = st.number_input("ATR Window", 5, 50, 14)
+    atr_k = st.number_input("ATR Multiplier", 0.5, 5.0, 2.0)
 
 # Sync logic for slider
 if date_range_slider != (start_date, end_date):
@@ -255,7 +259,30 @@ if st.button("Fetch Real ETH Prices & Run Simulation"):
     st.json(result['summary'])
 
     st.subheader("Portfolio Equity Curve")
-    st.line_chart(result['equity_curve'].set_index('Date')['portfolio'])
+    import matplotlib.pyplot as plt
+    eq_curve = result['equity_curve']
+    trades = result.get('trades', pd.DataFrame())
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(eq_curve['Date'], eq_curve['portfolio'], label='Portfolio')
+
+    # Add BUY/SELL markers
+    if not trades.empty:
+        buy_trades = trades[trades['Action'] == 'BUY']
+        sell_trades = trades[trades['Action'] == 'SELL']
+        ax.scatter(buy_trades['Date'], eq_curve.set_index('Date').loc[buy_trades['Date'], 'portfolio'], color='green', marker='^', s=100, label='BUY')
+        ax.scatter(sell_trades['Date'], eq_curve.set_index('Date').loc[sell_trades['Date'], 'portfolio'], color='red', marker='v', s=100, label='SELL')
+        # Add text labels
+        for _, row in buy_trades.iterrows():
+            y = eq_curve.set_index('Date').loc[row['Date'], 'portfolio']
+            ax.text(row['Date'], y, 'BUY', color='green', fontsize=8, ha='left', va='bottom', rotation=45)
+        for _, row in sell_trades.iterrows():
+            y = eq_curve.set_index('Date').loc[row['Date'], 'portfolio']
+            ax.text(row['Date'], y, 'SELL', color='red', fontsize=8, ha='right', va='top', rotation=45)
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Portfolio Value')
+    ax.legend()
+    plt.tight_layout()
+    st.pyplot(fig)
 
     st.subheader("All Trades")
     if 'trades' in result:
