@@ -195,7 +195,7 @@ if (start_date != st.session_state['start_date']) or (end_date != st.session_sta
 
 start_date, end_date = st.session_state['start_date'], st.session_state['end_date']
 df_prices = full_df_prices[(full_df_prices['Date'] >= pd.to_datetime(start_date)) & (full_df_prices['Date'] <= pd.to_datetime(end_date))]
-st.subheader(f"Loaded ETH Prices ({start_date} to {end_date})")
+st.subheader(f"ETH Prices ({start_date} to {end_date})")
 st.line_chart(df_prices.set_index('Date')['Close'])
 
 # Date range slider right below the graph
