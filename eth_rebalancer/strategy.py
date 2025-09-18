@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import pdb
 
 def run_backtest(df, args):
     """
@@ -40,6 +41,7 @@ def run_backtest(df, args):
 
     # --- Defensive copy and basic hygiene ---
     df = df.copy()
+
     if 'Date' not in df.columns or 'Close' not in df.columns:
         raise ValueError("Input DataFrame must contain 'Date' and 'Close' columns.")
 
@@ -77,6 +79,7 @@ def run_backtest(df, args):
         # If SMA disabled (0), use price itself for bands reference
         df['SMA'] = df['Close']
 
+    #pdb.set_trace() 
     # --- Bands: percent or ATR ---
     if use_bands:
         # If High/Low not present, approximate ATR via |diff(Close)| rolling mean
@@ -138,7 +141,7 @@ def run_backtest(df, args):
             fee_paid = stable_hold - spend_after_fee
             stable_hold = 0.0
             buys += 1
-
+      
             trades.append({
                 'Date': date,
                 'Action': 'BUY',
@@ -161,7 +164,7 @@ def run_backtest(df, args):
             eth_hold = 0.0
             stable_hold += proceeds_after_fee
             sells += 1
-
+      
             trades.append({
                 'Date': date,
                 'Action': 'SELL',
@@ -182,6 +185,7 @@ def run_backtest(df, args):
         eth_hold    *= eth_mult
         stable_hold *= stable_mult
 
+  
     # --- Results ---
     trades_df = pd.DataFrame(trades) if len(trades) else pd.DataFrame(
         columns=['Date','Action','Price','EffPrice','FeePaid_$','ETH_delta','ETH_holdings','Stable_holdings']

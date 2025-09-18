@@ -4,7 +4,7 @@ from eth_rebalancer.data import load_data
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--start', type=str, default='2021-09-06')
+    parser.add_argument('--start', type=str, default='2021-09-01')
     parser.add_argument('--end', type=str, default='2025-09-06')
     parser.add_argument('--initial', type=float, default=100000)
     parser.add_argument('--eth_weight', type=float, default=0.5)

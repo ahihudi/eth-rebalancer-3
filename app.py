@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime, timedelta, timezone
+import pdb
 
 from eth_rebalancer.strategy import run_backtest
 
@@ -20,6 +21,8 @@ def fetch_yfinance_prices(start_date=None, end_date=None):
 
     if end_date is None: end_date = pd.to_datetime('today')
     if start_date is None: start_date = end_date - pd.Timedelta(days=365*4)
+
+    #pdb.set_trace() 
 
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
@@ -49,7 +52,7 @@ def fetch_yfinance_prices(start_date=None, end_date=None):
 
     raw_all = pd.concat(frames).sort_index()
     raw_all.index = pd.to_datetime(raw_all.index).tz_localize(None)
-
+  
     # Normalize Close (handle MultiIndex or Adj Close)
     if isinstance(raw_all.columns, pd.MultiIndex):
         try:
@@ -90,7 +93,7 @@ def fetch_binance_prices(start_date=None, end_date=None):
     start_dt = pd.to_datetime(start_date).tz_localize(timezone.utc)
     end_dt = pd.to_datetime(end_date).tz_localize(timezone.utc)
 
-    url = "https://api.binance.com/api/v3/klines"
+    url = "https://api.binance.us/api/v3/klines"
     interval = "1h"
     limit = 1000  # max per request (~41.6 days of 1h bars)
 
@@ -141,7 +144,9 @@ def fetch_prices(start_date=None, end_date=None):
     Wrapper: try yfinance first (ETH-USD 1h); if it fails, fallback to Binance 1h.
     """
     try:
-        return fetch_yfinance_prices(start_date, end_date)
+  #     return fetch_yfinance_prices(start_date, end_date)
+        return fetch_binance_prices(start_date, end_date)
+
     except Exception as e_yf:
         st.warning(f"yfinance fetch failed, trying Binance fallback… ({e_yf})")
         return fetch_binance_prices(start_date, end_date)
@@ -152,14 +157,26 @@ def fetch_prices(start_date=None, end_date=None):
 # -----------------------------
 st.title("ETH Rebalancer Simulator")
 
-# Sidebar inputs (kept as-is)
-start_date = st.date_input("Start Date", pd.to_datetime("2021-09-06"))
-end_date = st.date_input("End Date", pd.to_datetime("today"))
+
+
+# Fetch full price data for slider range
+full_df_prices = fetch_prices()
+min_date = full_df_prices['Date'].min().date()
+max_date = full_df_prices['Date'].max().date()
+
+# Initialize session state for range and individual dates
+if 'date_range' not in st.session_state:
+    st.session_state['date_range'] = (min_date, max_date)
+if 'start_date' not in st.session_state:
+    st.session_state['start_date'] = min_date
+if 'end_date' not in st.session_state:
+    st.session_state['end_date'] = max_date
+
 initial = st.number_input("Initial Capital", 1000, 1000000, 100000)
 eth_weight = st.slider("Initial ETH Weight", 0.0, 1.0, 0.5)
 sma = st.slider("SMA Window", 50, 400, 200)
 alpha = st.slider("Alpha", 0.1, 1.0, 0.5)
-threshold = st.slider("Rebalance Threshold", 0.01, 0.1, 0.03)
+threshold = st.slider("Rebalance Threshold", 0.01, 0.1, 0.05)
 stable_apy = st.slider("Stablecoin APY", 0.0, 0.2, 0.06)
 eth_apy = st.slider("ETH APY", 0.0, 0.2, 0.025)
 fee_bps = st.slider("Fee (bps)", 0, 100, 5)
@@ -168,10 +185,51 @@ use_bands = st.checkbox("Use ATR Bands")
 atr = st.number_input("ATR Window", 5, 50, 14)
 atr_k = st.number_input("ATR Multiplier", 0.5, 5.0, 2.0)
 
+
+# Individual date inputs
+col1, col2 = st.columns(2)
+with col1:
+    start_date = st.date_input("Start Date", st.session_state['start_date'], min_value=min_date, max_value=max_date)
+with col2:
+    end_date = st.date_input("End Date", st.session_state['end_date'], min_value=min_date, max_value=max_date)
+
+# Two-way sync logic
+date_range = (st.session_state['start_date'], st.session_state['end_date'])
+if (start_date != st.session_state['start_date']) or (end_date != st.session_state['end_date']):
+    st.session_state['start_date'] = start_date
+    st.session_state['end_date'] = end_date
+    st.session_state['date_range'] = (start_date, end_date)
+    st.rerun()
+
+start_date, end_date = st.session_state['start_date'], st.session_state['end_date']
+
+
 # Action
+
+df_prices = full_df_prices[(full_df_prices['Date'] >= pd.to_datetime(start_date)) & (full_df_prices['Date'] <= pd.to_datetime(end_date))]
+st.subheader(f"Loaded ETH Prices ({start_date} to {end_date})")
+st.line_chart(df_prices.set_index('Date')['Close'])
+
+# Date range slider right below the graph
+date_range_slider = st.slider(
+    "Select Date Range",
+    min_value=min_date,
+    max_value=max_date,
+    value=(start_date, end_date),
+    format="YYYY-MM-DD"
+)
+
+# Sync logic for slider
+if date_range_slider != (start_date, end_date):
+    st.session_state['start_date'], st.session_state['end_date'] = date_range_slider
+    st.session_state['date_range'] = date_range_slider
+    st.rerun()
+
 if st.button("Fetch Real ETH Prices & Run Simulation"):
     # Fetch data (same name/shape as before: Date + Close)
-    df = fetch_prices(start_date=pd.to_datetime(start_date), end_date=pd.to_datetime(end_date))
+    df = df_prices
+
+    #pdb.set_trace() 
 
     # Build args object (unchanged)
     args = type("Args", (), {
