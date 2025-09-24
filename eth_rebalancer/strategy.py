@@ -105,9 +105,11 @@ def run_backtest(df, args):
     slip_buy  = 1.0 + float(slip_bps) / 10_000.0
     slip_sell = 1.0 - float(slip_bps) / 10_000.0
 
-    # Approx per-bar compounding as "daily"; for sub-daily this compounds each bar.
-    stable_mult = 1.0 + stable_apy / 365.0
-    eth_mult    = 1.0 + eth_apy    / 365.0
+    # Use multipliers passed from args (calculated based on selected interval)
+    stable_mult = float(getattr(args, 'stable_mult', 1.0 + stable_apy / (365*24)))
+    eth_mult    = float(getattr(args, 'eth_mult', 1.0 + eth_apy / (365*24)))
+
+   
 
     # --- Initialize portfolio ---
     p0 = float(df['Close'].iloc[0])
