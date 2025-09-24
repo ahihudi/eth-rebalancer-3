@@ -12,10 +12,16 @@ from eth_rebalancer.strategy import run_backtest
 # -----------------------------
 
 @st.cache_data(show_spinner=True)
-def fetch_yfinance_prices(start_date=None, end_date=None):
+def fetch_yfinance_prices(start_date=None, end_date=None, interval="1h"):
     """
-    Fetch ETH-USD 1h candles from yfinance over ANY range by chunking.
+    Fetch ETH-USD candles from yfinance over ANY range by chunking.
     Returns DataFrame with ['Date','Close'].
+    
+    Args:
+        start_date: Start date for data fetching
+        end_date: End date for data fetching  
+        interval: Yahoo Finance interval (1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo)
+                  Note: For sub-daily intervals, yfinance has ~60 day limits per request
     """
     import yfinance as yf
 
@@ -37,7 +43,7 @@ def fetch_yfinance_prices(start_date=None, end_date=None):
             "ETH-USD",
             start=cur.tz_localize(None),
             end=nxt.tz_localize(None),
-            interval="1h",
+            interval=interval,
             auto_adjust=True,
             group_by="column",
             progress=False,
@@ -82,10 +88,15 @@ def fetch_yfinance_prices(start_date=None, end_date=None):
 
 
 @st.cache_data(show_spinner=True)
-def fetch_binance_prices(start_date=None, end_date=None):
+def fetch_binance_prices(start_date=None, end_date=None, interval="1h"):
     """
-    Fallback: fetch ETHUSDT 1h klines from Binance public API.
+    Fallback: fetch ETHUSDT klines from Binance public API with configurable interval.
     Treats USDT ≈ USD. Returns ['Date','Close'] (UTC).
+    
+    Args:
+        start_date: Start date for data fetching
+        end_date: End date for data fetching  
+        interval: Binance API interval (1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d)
     """
     if end_date is None: end_date = pd.to_datetime('today')
     if start_date is None: start_date = end_date - pd.Timedelta(days=365*4)
@@ -94,8 +105,7 @@ def fetch_binance_prices(start_date=None, end_date=None):
     end_dt = pd.to_datetime(end_date).tz_localize(timezone.utc)
 
     url = "https://api.binance.us/api/v3/klines"
-    interval = "1h"
-    limit = 1000  # max per request (~41.6 days of 1h bars)
+    limit = 1000  # max per request
 
     frames = []
     cur = int(start_dt.timestamp() * 1000)
@@ -139,17 +149,60 @@ def fetch_binance_prices(start_date=None, end_date=None):
     return df[["Date","Close"]]
 
 
-def fetch_prices(start_date=None, end_date=None):
+def fetch_prices(start_date=None, end_date=None, interval="1h"):
     """
-    Wrapper: try yfinance first (ETH-USD 1h); if it fails, fallback to Binance 1h.
+    Wrapper: try yfinance first (ETH-USD); if it fails, fallback to Binance.
+    
+    Args:
+        start_date: Start date for data fetching
+        end_date: End date for data fetching  
+        interval: Time interval for candles
     """
     try:
-  #     return fetch_yfinance_prices(start_date, end_date)
-        return fetch_binance_prices(start_date, end_date)
+  #     return fetch_yfinance_prices(start_date, end_date, interval)
+        return fetch_binance_prices(start_date, end_date, interval)
 
     except Exception as e_yf:
         st.warning(f"yfinance fetch failed, trying Binance fallback… ({e_yf})")
-        return fetch_binance_prices(start_date, end_date)
+        return fetch_binance_prices(start_date, end_date, interval)
+
+
+def calculate_holding_value(df_prices, start_date, end_date, initial_capital):
+    """
+    Calculate the holding value (final ETH value in dollars) based on start and end date.
+    
+    Args:
+        df_prices: DataFrame with Date and Close columns
+        start_date: Selected start date
+        end_date: Selected end date
+        initial_capital: Initial capital amount
+    
+    Returns:
+        float: Final ETH value in dollars if we held ETH from start to end
+    """
+    if df_prices.empty:
+        return 0.0
+    
+    start_date_dt = pd.to_datetime(start_date)
+    end_date_dt = pd.to_datetime(end_date)
+    
+    # Find the first available price ON or AFTER the start date
+    start_filtered = df_prices[df_prices['Date'] >= start_date_dt]
+    if start_filtered.empty:
+        return 0.0
+    initial_eth_price = start_filtered['Close'].iloc[0]
+    
+    # Find the last available price ON or BEFORE the end date
+    end_filtered = df_prices[df_prices['Date'] <= end_date_dt + pd.Timedelta(hours=23, minutes=59, seconds=59)]
+    if end_filtered.empty:
+        return 0.0
+    final_eth_price = end_filtered['Close'].iloc[-1]
+    
+    # Calculate how much ETH you could buy at the start date
+    initial_eth_amount = initial_capital / initial_eth_price
+    # Calculate final value of that ETH amount at the end date
+    final_holding_value = initial_eth_amount * final_eth_price
+    return final_holding_value
 
 
 # -----------------------------
@@ -157,40 +210,137 @@ def fetch_prices(start_date=None, end_date=None):
 # -----------------------------
 st.title("ETH Rebalancer Simulator")
 
+# Define the absolute allowed date range (past 4 years)
+today = datetime.now().date()
+allowed_min_date = today - timedelta(days=365*4)  # 4 years ago
+allowed_max_date = today
 
+# Interval selection dropdown
+interval_options = {
+    "1m": "1 minute",
+    "3m": "3 minutes", 
+    "5m": "5 minutes",
+    "15m": "15 minutes",
+    "30m": "30 minutes",
+    "1h": "1 hour",
+    "2h": "2 hours",
+    "4h": "4 hours", 
+    "6h": "6 hours",
+    "8h": "8 hours",
+    "12h": "12 hours",
+    "1d": "1 day"
+}
+
+# Initialize session state for interval
+if 'selected_interval' not in st.session_state:
+    st.session_state['selected_interval'] = "1h"
+
+selected_interval = st.selectbox(
+    "Select Time Interval",
+    options=list(interval_options.keys()),
+    format_func=lambda x: interval_options[x],
+    index=list(interval_options.keys()).index(st.session_state['selected_interval']),
+    key='interval_selector'
+)
+
+# Update session state if interval changed
+if selected_interval != st.session_state['selected_interval']:
+    st.session_state['selected_interval'] = selected_interval
+    # Clear cache to force data reload with new interval
+    st.cache_data.clear()
+    st.rerun()
 
 # Fetch full price data for slider range
-full_df_prices = fetch_prices()
+# Use current start/end dates if they exist in session state, otherwise fetch default range first
+if 'start_date' not in st.session_state or 'end_date' not in st.session_state:
+    # First time - fetch default range to initialize slider bounds
+    temp_df = fetch_prices(interval=selected_interval)
+    min_date = temp_df['Date'].min().date()
+    max_date = temp_df['Date'].max().date()
+    
+    # Initialize session state for range and individual dates
+    if 'date_range' not in st.session_state:
+        st.session_state['date_range'] = (min_date, max_date)
+    if 'start_date' not in st.session_state:
+        st.session_state['start_date'] = min_date
+    if 'end_date' not in st.session_state:
+        st.session_state['end_date'] = max_date
+    
+    full_df_prices = temp_df
+else:
+    # Use current start/end dates from session state, but expand range if needed to ensure data availability
+    current_start = st.session_state['start_date']
+    current_end = st.session_state['end_date']
+    
+    # Expand the fetch range to ensure we have data for the entire allowed range
+    # This prevents issues when users select dates outside the currently loaded range
+    fetch_start = min(current_start, allowed_min_date)
+    fetch_end = max(current_end, allowed_max_date)
+    
+    full_df_prices = fetch_prices(start_date=fetch_start, end_date=fetch_end, interval=selected_interval)
+
+# Update min_date and max_date from the fetched data for slider bounds
 min_date = full_df_prices['Date'].min().date()
 max_date = full_df_prices['Date'].max().date()
 
-# Initialize session state for range and individual dates
-if 'date_range' not in st.session_state:
-    st.session_state['date_range'] = (min_date, max_date)
-if 'start_date' not in st.session_state:
-    st.session_state['start_date'] = min_date
-if 'end_date' not in st.session_state:
-    st.session_state['end_date'] = max_date
 
 
+# Initial Capital, Start Date, End Date, Holding in one row
 
-# Initial Capital, Start Date, End Date in one row
-col_init, col_start, col_end = st.columns(3)
+# --- UI for Initial Capital, Start Date, End Date (no holding yet) ---
+col_init, col_start, col_end, col_holding = st.columns(4)
 with col_init:
     initial = st.number_input("Initial Capital", 1000, 1000000, 100000)
 with col_start:
-    start_date = st.date_input("Start Date", st.session_state['start_date'], min_value=min_date, max_value=max_date)
+    # Clamp default value to allowed range to avoid StreamlitAPIException
+    default_start = min(max(st.session_state['start_date'], allowed_min_date), allowed_max_date)
+    start_date = st.date_input("Start Date", default_start, min_value=allowed_min_date, max_value=allowed_max_date)
 with col_end:
-    end_date = st.date_input("End Date", st.session_state['end_date'], min_value=min_date, max_value=max_date)
+    default_end = min(max(st.session_state['end_date'], allowed_min_date), allowed_max_date)
+    end_date = st.date_input("End Date", default_end, min_value=allowed_min_date, max_value=allowed_max_date)
+
 
 # Two-way sync logic
 
 date_range = (st.session_state['start_date'], st.session_state['end_date'])
+
+# Check for dates outside the allowed 4-year range and show warnings
+if start_date < allowed_min_date or start_date > allowed_max_date:
+    st.warning(f"Start date is outside the allowed range ({allowed_min_date} to {allowed_max_date}). Please select a date within the past 4 years.")
+if end_date < allowed_min_date or end_date > allowed_max_date:
+    st.warning(f"End date is outside the allowed range ({allowed_min_date} to {allowed_max_date}). Please select a date within the past 4 years.")
+
+
+# --- Sync session state for start/end date changes ---
 if (start_date != st.session_state['start_date']) or (end_date != st.session_state['end_date']):
     st.session_state['start_date'] = start_date
     st.session_state['end_date'] = end_date
     st.session_state['date_range'] = (start_date, end_date)
     st.rerun()
+
+
+# --- Now display Holding value using the latest session state ---
+with col_holding:
+    # Always use the latest session state for start/end date
+    holding_value = calculate_holding_value(full_df_prices, st.session_state['start_date'], st.session_state['end_date'], initial)
+    start_date_dt = pd.to_datetime(st.session_state['start_date'])
+    end_date_dt = pd.to_datetime(st.session_state['end_date'])
+    start_filtered = full_df_prices[full_df_prices['Date'] >= start_date_dt]
+    end_filtered = full_df_prices[full_df_prices['Date'] <= end_date_dt + pd.Timedelta(hours=23, minutes=59, seconds=59)]
+    start_eth_price = start_filtered['Close'].iloc[0] if not start_filtered.empty else 0.0
+    end_eth_price = end_filtered['Close'].iloc[-1] if not end_filtered.empty else 0.0
+    st.markdown(
+        f"""
+        <div style="text-align: left; margin-top: 20px;">
+            <p style="font-size: 14px; color: #666; margin-bottom: 2px;">Holding</p>
+            <p style="font-size: 16px; font-weight: bold; margin-top: 0px; margin-bottom: 8px;">${holding_value:,.2f}</p>
+            <p style="font-size: 11px; color: #888; margin: 0px;">Start: ${start_eth_price:,.2f}</p>
+            <p style="font-size: 11px; color: #888; margin: 0px;">End: ${end_eth_price:,.2f}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+        help="Final ETH value in dollars if held from start to end date"
+    )
 
 
 start_date, end_date = st.session_state['start_date'], st.session_state['end_date']
@@ -201,8 +351,8 @@ st.line_chart(df_prices.set_index('Date')['Close'])
 # Date range slider right below the graph
 date_range_slider = st.slider(
     "Select Date Range",
-    min_value=min_date,
-    max_value=max_date,
+    min_value=max(min_date, allowed_min_date),
+    max_value=min(max_date, allowed_max_date),
     value=(start_date, end_date),
     format="YYYY-MM-DD"
 )
@@ -215,8 +365,8 @@ with st.expander("Advanced Options"):
     eth_weight = st.slider("Initial ETH Weight", 0.0, 1.0, 0.5)
     sma = st.slider("SMA Window", 50, 400, 200)
     alpha = st.slider("Alpha", 0.1, 1.0, 0.5)
-    stable_apy = st.slider("Stablecoin APY", 0.0, 0.2, 0.06)
-    eth_apy = st.slider("ETH APY", 0.0, 0.2, 0.025)
+    stable_apy = st.slider("Stablecoin APY", 0.0, 0.2, 0.00)
+    eth_apy = st.slider("ETH APY", 0.0, 0.2, 0.00)
     fee_bps = st.slider("Fee (bps)", 0, 100, 5)
     slip_bps = st.slider("Slippage (bps)", 0, 100, 10)
     use_bands = st.checkbox("Use ATR Bands")
@@ -229,13 +379,56 @@ if date_range_slider != (start_date, end_date):
     st.session_state['date_range'] = date_range_slider
     st.rerun()
 
-if st.button("Fetch Real ETH Prices & Run Simulation"):
+if st.button("Run Simulation"):
     # Fetch data (same name/shape as before: Date + Close)
     df = df_prices
 
     #pdb.set_trace() 
 
-    # Build args object (unchanged)
+    # Calculate interval-based multipliers
+    def calculate_multipliers(interval, stable_apy, eth_apy):
+        # Define conversion factors for each specific interval
+        interval_to_periods_per_year = {
+            "1m": 365 * 24 * 60,      # 525,600 periods per year
+            "3m": 365 * 24 * 20,      # 175,200 periods per year (60/3 = 20 periods per hour)
+            "5m": 365 * 24 * 12,      # 105,120 periods per year (60/5 = 12 periods per hour)
+            "15m": 365 * 24 * 4,      # 35,040 periods per year (60/15 = 4 periods per hour)
+            "30m": 365 * 24 * 2,      # 17,520 periods per year (60/30 = 2 periods per hour)
+            "1h": 365 * 24,           # 8,760 periods per year
+            "2h": 365 * 12,           # 4,380 periods per year (24/2 = 12 periods per day)
+            "4h": 365 * 6,            # 2,190 periods per year (24/4 = 6 periods per day)
+            "6h": 365 * 4,            # 1,460 periods per year (24/6 = 4 periods per day)
+            "8h": 365 * 3,            # 1,095 periods per year (24/8 = 3 periods per day)
+            "12h": 365 * 2,           # 730 periods per year (24/12 = 2 periods per day)
+            "1d": 365                 # 365 periods per year
+        }
+        
+        # Get periods per year for the specific interval
+        periods_per_year = interval_to_periods_per_year.get(interval)
+        
+        if periods_per_year is None:
+            # Fallback for unexpected interval format
+            if interval.endswith('m'):  # minutes
+                minutes = int(interval[:-1])
+                periods_per_year = 365 * 24 * (60 // minutes)
+            elif interval.endswith('h'):  # hours
+                hours = int(interval[:-1])
+                periods_per_year = 365 * (24 // hours)
+            elif interval.endswith('d'):  # days
+                days = int(interval[:-1])
+                periods_per_year = 365 // days
+            else:
+                # Default to daily if interval format is unexpected
+                periods_per_year = 365
+        
+        stable_mult = 1.0 + stable_apy / periods_per_year
+        eth_mult = 1.0 + eth_apy / periods_per_year
+        
+        return stable_mult, eth_mult
+    
+    stable_mult, eth_mult = calculate_multipliers(selected_interval, stable_apy, eth_apy)
+
+    # Build args object with interval and multipliers
     args = type("Args", (), {
         "initial": initial,
         "eth_weight": eth_weight,
@@ -248,7 +441,10 @@ if st.button("Fetch Real ETH Prices & Run Simulation"):
         "slip_bps": slip_bps,
         "use_bands": use_bands,
         "atr": atr,
-        "atr_k": atr_k
+        "atr_k": atr_k,
+        "interval": selected_interval,
+        "stable_mult": stable_mult,
+        "eth_mult": eth_mult
     })()
 
     # Run backtest (your original logic)
