@@ -182,26 +182,49 @@ def calculate_holding_value(df_prices, start_date, end_date, initial_capital):
     """
     if df_prices.empty:
         return 0.0
-    
+
     start_date_dt = pd.to_datetime(start_date)
     end_date_dt = pd.to_datetime(end_date)
-    
+
     # Find the first available price ON or AFTER the start date
     start_filtered = df_prices[df_prices['Date'] >= start_date_dt]
     if start_filtered.empty:
         return 0.0
     initial_eth_price = start_filtered['Close'].iloc[0]
-    
+
     # Find the last available price ON or BEFORE the end date
     end_filtered = df_prices[df_prices['Date'] <= end_date_dt + pd.Timedelta(hours=23, minutes=59, seconds=59)]
     if end_filtered.empty:
         return 0.0
     final_eth_price = end_filtered['Close'].iloc[-1]
-    
+
     # Calculate how much ETH you could buy at the start date
     initial_eth_amount = initial_capital / initial_eth_price
+
+    # --- ETH APY compounding for holding ---
+    # Try to get eth_apy from Streamlit session state, default to 0.0 if not set
+    eth_apy = 0.0
+    try:
+        import streamlit as st
+        eth_apy = st.session_state.get('eth_apy', 0.0)
+    except Exception:
+        eth_apy = 0.0
+
+    # Calculate the number of days in the holding period
+    days_held = (end_date_dt - start_date_dt).days
+    if days_held < 0:
+        return 0.0
+    years_held = days_held / 365.0
+
+    # Compound ETH amount by APY for the holding period
+    if eth_apy > 0 and years_held > 0:
+        # Assume APY is annualized, compounded once per year
+        compounded_eth_amount = initial_eth_amount * ((1 + eth_apy) ** years_held)
+    else:
+        compounded_eth_amount = initial_eth_amount
+
     # Calculate final value of that ETH amount at the end date
-    final_holding_value = initial_eth_amount * final_eth_price
+    final_holding_value = compounded_eth_amount * final_eth_price
     return final_holding_value
 
 
@@ -320,8 +343,10 @@ if (start_date != st.session_state['start_date']) or (end_date != st.session_sta
 
 
 # --- Now display Holding value using the latest session state ---
+# Add eth_apy as a dependency to force Streamlit to rerun this block when eth_apy changes
+eth_apy = st.session_state.get('eth_apy', 0.0)
 with col_holding:
-    # Always use the latest session state for start/end date
+    # Always use the latest session state for start/end date and eth_apy
     holding_value = calculate_holding_value(full_df_prices, st.session_state['start_date'], st.session_state['end_date'], initial)
     start_date_dt = pd.to_datetime(st.session_state['start_date'])
     end_date_dt = pd.to_datetime(st.session_state['end_date'])
@@ -366,12 +391,19 @@ with st.expander("Advanced Options"):
     sma = st.slider("SMA Window", 50, 400, 200)
     alpha = st.slider("Alpha", 0.1, 1.0, 0.5)
     stable_apy = st.slider("Stablecoin APY", 0.0, 0.2, 0.00)
-    eth_apy = st.slider("ETH APY", 0.0, 0.2, 0.00)
+    eth_apy = st.slider("ETH APY", 0.0, 0.2, 0.00, key='eth_apy_slider')
     fee_bps = st.slider("Fee (bps)", 0, 100, 5)
     slip_bps = st.slider("Slippage (bps)", 0, 100, 10)
     use_bands = st.checkbox("Use ATR Bands")
     atr = st.number_input("ATR Window", 5, 50, 14)
     atr_k = st.number_input("ATR Multiplier", 0.5, 5.0, 2.0)
+
+# --- Sync session state for eth_apy changes ---
+if 'eth_apy' not in st.session_state:
+    st.session_state['eth_apy'] = eth_apy
+elif eth_apy != st.session_state['eth_apy']:
+    st.session_state['eth_apy'] = eth_apy
+    st.rerun()
 
 # Sync logic for slider
 if date_range_slider != (start_date, end_date):
